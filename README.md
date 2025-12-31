@@ -72,7 +72,7 @@ The integration uses two methods to collect data:
 ### 2. GATT Connection (Active)
 - Connects directly to the toothbrush after brushing ends
 - Reads battery level from standard BLE Battery Service
-- Connection only possible for ~30 seconds after turning off the toothbrush
+- Connection only possible after turning off the toothbrush
 
 ## Automation Examples
 
