@@ -53,6 +53,10 @@ class XiaomiToothbrushCoordinator(DataUpdateCoordinator[XiaomiToothbrushData]):
         self._total_brushing_time: int = 0
         self._current_session_duration: int = 0
         
+        # Debounce - prevent false positives
+        self._brushing_start_candidate: float | None = None
+        self._confirmed_brushing: bool = False
+        
         # GATT
         self._last_gatt_poll: float = 0
         self._gatt_battery: int | None = None
@@ -76,6 +80,9 @@ class XiaomiToothbrushCoordinator(DataUpdateCoordinator[XiaomiToothbrushData]):
         )
         if service_info:
             self._process_service_info(service_info)
+
+        # Try to read battery on startup
+        self.hass.async_create_task(self._initial_gatt_poll())
 
     @callback
     def _handle_bluetooth_event(
@@ -108,30 +115,55 @@ class XiaomiToothbrushCoordinator(DataUpdateCoordinator[XiaomiToothbrushData]):
         """Update coordinator data with parsed values."""
         current_time = time.time()
         
-        # Track brushing sessions
-        if parsed.is_brushing and not self._last_brushing_state:
-            # Brushing started
-            _LOGGER.info("Brushing session STARTED")
-            self._session_start_time = current_time
-            self._current_session_duration = 0
-
-        elif not parsed.is_brushing and self._last_brushing_state:
-            # Brushing stopped
-            if self._session_start_time:
+        # Minimum duration to confirm brushing (avoid false positives)
+        MIN_BRUSHING_DURATION = 5  # seconds
+        
+        # Handle brushing state with debounce
+        raw_brushing = parsed.is_brushing
+        
+        if raw_brushing and not self._brushing_start_candidate:
+            # First brushing packet - start candidate timer
+            self._brushing_start_candidate = current_time
+            _LOGGER.debug("Brushing candidate started")
+        
+        elif raw_brushing and self._brushing_start_candidate:
+            # Still getting brushing packets
+            candidate_duration = current_time - self._brushing_start_candidate
+            
+            if not self._confirmed_brushing and candidate_duration >= MIN_BRUSHING_DURATION:
+                # Confirmed! This is real brushing
+                self._confirmed_brushing = True
+                self._session_start_time = self._brushing_start_candidate
+                self._current_session_duration = int(candidate_duration)
+                _LOGGER.info("Brushing session CONFIRMED (after %.1f seconds)", candidate_duration)
+            
+            elif self._confirmed_brushing:
+                # Update duration
+                self._current_session_duration = int(current_time - self._session_start_time)
+        
+        elif not raw_brushing and self._brushing_start_candidate:
+            # Brushing packets stopped
+            if self._confirmed_brushing:
+                # Real session ended
                 duration = int(current_time - self._session_start_time)
                 self._total_brushing_time += duration
                 self._current_session_duration = duration
                 _LOGGER.info("Brushing session ENDED. Duration: %d seconds", duration)
-            self._session_start_time = None
+                
+                # Schedule GATT poll after brushing ends
+                self.hass.async_create_task(self._delayed_gatt_poll())
+            else:
+                # False positive - was less than MIN_BRUSHING_DURATION
+                candidate_duration = current_time - self._brushing_start_candidate
+                _LOGGER.debug("False positive ignored (%.1f seconds)", candidate_duration)
             
-            # Schedule GATT poll after brushing ends
-            self.hass.async_create_task(self._delayed_gatt_poll())
-
-        elif parsed.is_brushing and self._session_start_time:
-            # Still brushing - update duration
-            self._current_session_duration = int(current_time - self._session_start_time)
-
-        self._last_brushing_state = parsed.is_brushing
+            # Reset state
+            self._brushing_start_candidate = None
+            self._confirmed_brushing = False
+            self._session_start_time = None
+        
+        # Only report brushing if confirmed
+        parsed.is_brushing = self._confirmed_brushing
         
         # Always set duration from tracked value
         parsed.brushing_duration = self._current_session_duration
@@ -147,6 +179,37 @@ class XiaomiToothbrushCoordinator(DataUpdateCoordinator[XiaomiToothbrushData]):
         """Poll GATT after a short delay (device needs time to become connectable)."""
         await asyncio.sleep(5)  # Wait 5 seconds after brushing ends
         await self._poll_gatt_data()
+
+    async def _initial_gatt_poll(self) -> None:
+        """Try to read battery on startup."""
+        _LOGGER.info("Attempting initial GATT poll for battery...")
+        
+        # Try multiple times with delays (device may be sleeping)
+        for attempt in range(3):
+            gatt = XiaomiToothbrushGATT(self.address)
+            try:
+                connected = await gatt.connect(timeout=10.0)
+                if connected:
+                    battery = await gatt.read_battery()
+                    if battery is not None:
+                        self._gatt_battery = battery
+                        self.data.battery_percent = battery
+                        _LOGGER.info("Initial battery: %d%%", battery)
+                        self.async_set_updated_data(self.data)
+                    await gatt.disconnect()
+                    return
+            except Exception as e:
+                _LOGGER.debug("Initial GATT attempt %d failed: %s", attempt + 1, e)
+            finally:
+                try:
+                    await gatt.disconnect()
+                except:
+                    pass
+            
+            # Wait before retry
+            await asyncio.sleep(2)
+        
+        _LOGGER.debug("Initial GATT poll failed - device may be sleeping")
 
     async def _poll_gatt_data(self) -> None:
         """Poll data via GATT connection."""

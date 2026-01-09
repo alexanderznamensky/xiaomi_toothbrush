@@ -13,6 +13,7 @@ from homeassistant.const import CONF_ADDRESS, CONF_NAME
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, MANUFACTURER, MODEL
@@ -36,13 +37,7 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up Xiaomi Toothbrush binary sensors from a config entry.
-
-    Args:
-        hass: Home Assistant instance
-        entry: Config entry
-        async_add_entities: Callback to add entities
-    """
+    """Set up Xiaomi Toothbrush binary sensors from a config entry."""
     coordinator: XiaomiToothbrushCoordinator = hass.data[DOMAIN][entry.entry_id]
 
     entities = [
@@ -54,7 +49,7 @@ async def async_setup_entry(
 
 
 class XiaomiToothbrushBinarySensor(
-    CoordinatorEntity[XiaomiToothbrushCoordinator], BinarySensorEntity
+    CoordinatorEntity[XiaomiToothbrushCoordinator], RestoreEntity, BinarySensorEntity
 ):
     """Representation of a Xiaomi Toothbrush binary sensor."""
 
@@ -66,16 +61,11 @@ class XiaomiToothbrushBinarySensor(
         entry: ConfigEntry,
         description: BinarySensorEntityDescription,
     ) -> None:
-        """Initialize the binary sensor.
-
-        Args:
-            coordinator: Data coordinator
-            entry: Config entry
-            description: Sensor description
-        """
+        """Initialize the binary sensor."""
         super().__init__(coordinator)
         self.entity_description = description
         self._attr_unique_id = f"{entry.data[CONF_ADDRESS]}_{description.key}"
+        self._restored_state: bool | None = None
 
         # Device info
         self._attr_device_info = DeviceInfo(
@@ -85,13 +75,32 @@ class XiaomiToothbrushBinarySensor(
             model=MODEL,
         )
 
+    async def async_added_to_hass(self) -> None:
+        """Restore state on startup."""
+        await super().async_added_to_hass()
+        
+        last_state = await self.async_get_last_state()
+        if last_state and last_state.state not in (None, "unknown", "unavailable"):
+            self._restored_state = last_state.state == "on"
+            _LOGGER.debug("Restored brushing state: %s", self._restored_state)
+
     @property
     def is_on(self) -> bool | None:
         """Return True if brushing is active."""
-        if self.coordinator.data is None:
-            return None
+        # Live value takes priority
+        if self.coordinator.data is not None:
+            return self.coordinator.data.is_brushing
+        
+        # Fall back to restored state (typically False after restart)
+        return self._restored_state
 
-        return self.coordinator.data.is_brushing
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        # Always available if we have any state
+        if self.is_on is not None:
+            return True
+        return self.coordinator.last_update_success
 
     @property
     def extra_state_attributes(self) -> dict[str, str | int | None]:
