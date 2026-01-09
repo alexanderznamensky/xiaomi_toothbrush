@@ -1,0 +1,54 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Настройка зубной щётки Xiaomi",
+        "description": "Выберите зубную щётку из списка или введите MAC-адрес вручную.",
+        "data": {
+          "address": "MAC-адрес",
+          "name": "Название устройства"
+        }
+      },
+      "bluetooth_confirm": {
+        "title": "Подтверждение устройства",
+        "description": "Хотите настроить {name}?"
+      }
+    },
+    "error": {
+      "invalid_address": "Неверный формат MAC-адреса. Используйте XX:XX:XX:XX:XX:XX",
+      "cannot_connect": "Не удаётся подключиться к устройству",
+      "unknown": "Произошла неизвестная ошибка"
+    },
+    "abort": {
+      "already_configured": "Устройство уже настроено",
+      "no_devices_found": "Зубные щётки Xiaomi не найдены"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "battery": {
+        "name": "Батарея"
+      },
+      "brushing_duration": {
+        "name": "Длительность чистки"
+      },
+      "brushing_score": {
+        "name": "Оценка чистки"
+      },
+      "mode": {
+        "name": "Режим"
+      },
+      "total_time_today": {
+        "name": "Общее время за сегодня"
+      },
+      "signal_strength": {
+        "name": "Уровень сигнала"
+      }
+    },
+    "binary_sensor": {
+      "brushing": {
+        "name": "Чистка"
+      }
+    }
+  }
+}
