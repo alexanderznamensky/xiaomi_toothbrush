@@ -1,11 +1,15 @@
 """GATT client for Xiaomi Toothbrush direct connection."""
 from __future__ import annotations
 
-import asyncio
 import logging
+from typing import TYPE_CHECKING
 
-from bleak import BleakClient
 from bleak.exc import BleakError
+from homeassistant.components import bluetooth
+
+if TYPE_CHECKING:
+    from bleak import BleakClient
+    from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -19,10 +23,11 @@ UUID_HARDWARE_REV = "00002a27-0000-1000-8000-00805f9b34fb"
 
 
 class XiaomiToothbrushGATT:
-    """GATT client for Xiaomi Toothbrush."""
+    """GATT client for Xiaomi Toothbrush using HA Bluetooth."""
 
-    def __init__(self, address: str) -> None:
+    def __init__(self, hass: HomeAssistant, address: str) -> None:
         """Initialize GATT client."""
+        self.hass = hass
         self.address = address
         self._client: BleakClient | None = None
         
@@ -35,13 +40,31 @@ class XiaomiToothbrushGATT:
         self.hardware: str | None = None
 
     async def connect(self, timeout: float = 10.0) -> bool:
-        """Connect to the toothbrush."""
+        """Connect to the toothbrush using HA Bluetooth."""
         try:
-            _LOGGER.debug("Connecting to %s...", self.address)
-            self._client = BleakClient(self.address, timeout=timeout)
-            await self._client.connect()
+            _LOGGER.debug("Connecting to %s via HA Bluetooth...", self.address)
             
-            if self._client.is_connected:
+            # Get BLE device from HA
+            ble_device = bluetooth.async_ble_device_from_address(
+                self.hass, self.address, connectable=True
+            )
+            
+            if not ble_device:
+                _LOGGER.debug("Device %s not found", self.address)
+                return False
+            
+            # Use bleak-retry-connector via HA's async_get_bluetooth_adapters
+            from bleak_retry_connector import establish_connection
+            from bleak import BleakClient
+            
+            self._client = await establish_connection(
+                BleakClient,
+                ble_device,
+                self.address,
+                max_attempts=2,
+            )
+            
+            if self._client and self._client.is_connected:
                 _LOGGER.info("GATT connected to %s", self.address)
                 return True
             else:
@@ -51,11 +74,8 @@ class XiaomiToothbrushGATT:
         except BleakError as e:
             _LOGGER.debug("Connection error: %s", e)
             return False
-        except asyncio.TimeoutError:
-            _LOGGER.debug("Connection timeout")
-            return False
         except Exception as e:
-            _LOGGER.debug("Unexpected error: %s", e)
+            _LOGGER.debug("Unexpected error connecting: %s", e)
             return False
 
     async def disconnect(self) -> None:

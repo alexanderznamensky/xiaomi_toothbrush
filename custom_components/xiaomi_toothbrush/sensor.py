@@ -97,7 +97,7 @@ class XiaomiToothbrushSensor(
         # Device info
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.data[CONF_ADDRESS])},
-            name=entry.data.get(CONF_NAME, "Xiaomi Toothbrush"),
+            name=entry.data.get(CONF_NAME) or "SMI-T501",
             manufacturer=MANUFACTURER,
             model=MODEL,
         )
@@ -144,17 +144,18 @@ class XiaomiToothbrushSensor(
     
     def _get_live_value(self) -> Any:
         """Get live value from coordinator."""
+        key = self.entity_description.key
+
+        # Battery - use cached GATT value (may be set from restore)
+        if key == "battery":
+            return self.coordinator._gatt_battery
+
+        # Other sensors need coordinator.data
         if self.coordinator.data is None:
             return None
 
-        data = self.coordinator.data
-        key = self.entity_description.key
-
-        if key == "battery":
-            return data.battery_percent
-
         if key == "brushing_duration":
-            return data.brushing_duration
+            return self.coordinator._current_session_duration
 
         if key == "total_time_today":
             return self.coordinator.total_brushing_time_today

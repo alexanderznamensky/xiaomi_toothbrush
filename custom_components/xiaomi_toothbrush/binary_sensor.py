@@ -70,7 +70,7 @@ class XiaomiToothbrushBinarySensor(
         # Device info
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.data[CONF_ADDRESS])},
-            name=entry.data.get(CONF_NAME, "Xiaomi Toothbrush"),
+            name=entry.data.get(CONF_NAME) or "SMI-T501",
             manufacturer=MANUFACTURER,
             model=MODEL,
         )

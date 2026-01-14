@@ -53,9 +53,9 @@ class XiaomiToothbrushCoordinator(DataUpdateCoordinator[XiaomiToothbrushData]):
         self._total_brushing_time: int = 0
         self._current_session_duration: int = 0
         
-        # Debounce - prevent false positives
-        self._brushing_start_candidate: float | None = None
+        # Debounce - prevent false OFF readings
         self._confirmed_brushing: bool = False
+        self._last_brushing_packet_time: float = 0
         
         # GATT
         self._last_gatt_poll: float = 0
@@ -104,68 +104,54 @@ class XiaomiToothbrushCoordinator(DataUpdateCoordinator[XiaomiToothbrushData]):
             service_data[uuid] = data
 
         if not service_data:
+            _LOGGER.debug("No service data in advertisement")
             return
 
         parsed = self.parser.parse_advertisement(service_data)
 
         if parsed:
+            _LOGGER.debug(
+                "Parsed BLE: is_brushing=%s, raw=%s", 
+                parsed.is_brushing, 
+                parsed.raw_data[:20] if parsed.raw_data else "none"
+            )
             self._update_data(parsed)
+        else:
+            _LOGGER.debug("Failed to parse advertisement")
 
     def _update_data(self, parsed: XiaomiToothbrushData) -> None:
         """Update coordinator data with parsed values."""
         current_time = time.time()
         
-        # Minimum duration to confirm brushing (avoid false positives)
-        MIN_BRUSHING_DURATION = 5  # seconds
-        
-        # Handle brushing state with debounce
         raw_brushing = parsed.is_brushing
         
-        if raw_brushing and not self._brushing_start_candidate:
-            # First brushing packet - start candidate timer
-            self._brushing_start_candidate = current_time
-            _LOGGER.debug("Brushing candidate started")
-        
-        elif raw_brushing and self._brushing_start_candidate:
-            # Still getting brushing packets
-            candidate_duration = current_time - self._brushing_start_candidate
+        # Simple logic without debounce for now
+        if raw_brushing and not self._confirmed_brushing:
+            # Start brushing
+            self._confirmed_brushing = True
+            self._session_start_time = current_time
+            self._current_session_duration = 0
+            _LOGGER.info("Brushing session STARTED")
             
-            if not self._confirmed_brushing and candidate_duration >= MIN_BRUSHING_DURATION:
-                # Confirmed! This is real brushing
-                self._confirmed_brushing = True
-                self._session_start_time = self._brushing_start_candidate
-                self._current_session_duration = int(candidate_duration)
-                _LOGGER.info("Brushing session CONFIRMED (after %.1f seconds)", candidate_duration)
+        elif raw_brushing and self._confirmed_brushing:
+            # Still brushing - update duration
+            self._current_session_duration = int(current_time - self._session_start_time)
             
-            elif self._confirmed_brushing:
-                # Update duration
-                self._current_session_duration = int(current_time - self._session_start_time)
-        
-        elif not raw_brushing and self._brushing_start_candidate:
-            # Brushing packets stopped
-            if self._confirmed_brushing:
-                # Real session ended
+        elif not raw_brushing and self._confirmed_brushing:
+            # Stopped brushing
+            if self._session_start_time:
                 duration = int(current_time - self._session_start_time)
                 self._total_brushing_time += duration
                 self._current_session_duration = duration
                 _LOGGER.info("Brushing session ENDED. Duration: %d seconds", duration)
-                
-                # Schedule GATT poll after brushing ends
-                self.hass.async_create_task(self._delayed_gatt_poll())
-            else:
-                # False positive - was less than MIN_BRUSHING_DURATION
-                candidate_duration = current_time - self._brushing_start_candidate
-                _LOGGER.debug("False positive ignored (%.1f seconds)", candidate_duration)
-            
-            # Reset state
-            self._brushing_start_candidate = None
             self._confirmed_brushing = False
             self._session_start_time = None
+            
+            # Schedule GATT poll
+            self.hass.async_create_task(self._delayed_gatt_poll())
         
-        # Only report brushing if confirmed
+        # Set state
         parsed.is_brushing = self._confirmed_brushing
-        
-        # Always set duration from tracked value
         parsed.brushing_duration = self._current_session_duration
         
         # Use cached GATT battery if available
@@ -186,7 +172,7 @@ class XiaomiToothbrushCoordinator(DataUpdateCoordinator[XiaomiToothbrushData]):
         
         # Try multiple times with delays (device may be sleeping)
         for attempt in range(3):
-            gatt = XiaomiToothbrushGATT(self.address)
+            gatt = XiaomiToothbrushGATT(self.hass, self.address)
             try:
                 connected = await gatt.connect(timeout=10.0)
                 if connected:
@@ -226,7 +212,7 @@ class XiaomiToothbrushCoordinator(DataUpdateCoordinator[XiaomiToothbrushData]):
         self._last_gatt_poll = current_time
         _LOGGER.debug("Polling GATT data from %s", self.address)
         
-        gatt = XiaomiToothbrushGATT(self.address)
+        gatt = XiaomiToothbrushGATT(self.hass, self.address)
         
         try:
             connected = await gatt.connect(timeout=10.0)
